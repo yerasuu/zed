@@ -43,7 +43,8 @@ never shares one with an installed stable Zed. `settings.json` is shared between
 ### Agent accounts
 
 Run Claude Agent under several accounts at once. Run `agent: add claude account` from the
-command palette: Zed creates `~/.claude-account-<n>`, saves a `claude-acp@account-<n>` entry
+command palette: Zed creates `<zed config dir>/agent_accounts/claude-acp/account-<n>`
+(`~/.config/zed/...` on Linux), saves a `claude-acp@account-<n>` entry
 in `settings.json` and opens a thread with it, where Claude's login prompt appears. After
 logging in once, the account stays in the new-thread menu as "Claude Agent (account-<n>)".
 

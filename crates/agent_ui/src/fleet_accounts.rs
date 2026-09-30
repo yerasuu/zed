@@ -1,7 +1,8 @@
 //! fleet: adds Claude Agent accounts from inside Zed. Each account is an `agent_servers` entry
-//! `claude-acp@<name>` whose `CLAUDE_CONFIG_DIR` points at its own directory, so it keeps its
-//! own login while sharing settings and conversation history with `~/.claude`. Kept in its own
-//! file so upstream merges don't touch it; see `FLEET.md`.
+//! `claude-acp@<name>` whose `CLAUDE_CONFIG_DIR` points at its own directory under Zed's config
+//! dir (`agent_accounts/claude-acp/<name>`), so it keeps its own login while sharing settings
+//! and conversation history with `~/.claude`. Kept in its own file so upstream merges don't
+//! touch it; see `FLEET.md`.
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
@@ -66,10 +67,12 @@ fn add_claude_account(
     let configured_agents = AllAgentServersSettings::get_global(cx).clone();
 
     let task = cx.spawn_in(window, async move |workspace, cx| {
-        let home_dir = util::paths::home_dir();
-        let shared_dir = home_dir.join(".claude");
+        let shared_dir = util::paths::home_dir().join(".claude");
+        let accounts_dir = paths::config_dir()
+            .join("agent_accounts")
+            .join(CLAUDE_AGENT_ID);
         let (name, account_dir) =
-            next_free_account(&configured_agents, home_dir, fs.as_ref()).await;
+            next_free_account(&configured_agents, &accounts_dir, fs.as_ref()).await;
         let agent_id = AgentId::new(format!("{CLAUDE_AGENT_ID}@{name}"));
 
         fs.create_dir(&account_dir)
@@ -143,13 +146,13 @@ fn add_claude_account(
 /// Accounts are numbered from 2, since the default `claude-acp` entry is the first account.
 async fn next_free_account(
     configured_agents: &AllAgentServersSettings,
-    home_dir: &std::path::Path,
+    accounts_dir: &std::path::Path,
     fs: &dyn Fs,
 ) -> (String, PathBuf) {
     let mut number = 2;
     loop {
         let name = format!("account-{number}");
-        let account_dir = home_dir.join(format!(".claude-{name}"));
+        let account_dir = accounts_dir.join(&name);
         let configured = configured_agents.contains_key(&format!("{CLAUDE_AGENT_ID}@{name}"));
         if !configured && !fs.is_dir(&account_dir).await {
             return (name, account_dir);
