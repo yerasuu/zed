@@ -31,6 +31,9 @@ use crate::agent_registry_store::{AgentRegistryStore, RegistryAgent, RegistryTar
 
 use crate::worktree_store::WorktreeStore;
 
+// fleet: agent accounts
+pub mod agent_accounts;
+
 #[derive(Deserialize, Serialize, Clone, PartialEq, Eq, JsonSchema)]
 pub struct AgentServerCommand {
     #[serde(rename = "command")]
@@ -374,7 +377,10 @@ impl AgentServerStore {
                     );
                 }
                 CustomAgentServerSettings::Registry { env, .. } => {
-                    let Some(agent) = registry_agents_by_id.get(name) else {
+                    // fleet: `<agent>@<account>` entries run registry agent `<agent>`
+                    let Some((agent, account)) =
+                        agent_accounts::lookup_registry_agent(&registry_agents_by_id, name)
+                    else {
                         if registry_store.is_some() {
                             log::debug!("Registry agent '{}' not found in ACP registry", name);
                         }
@@ -412,7 +418,10 @@ impl AgentServerStore {
                                         as Box<dyn ExternalAgentServer>,
                                     ExternalAgentSource::Registry,
                                     agent.metadata.icon_path.clone(),
-                                    Some(agent.metadata.name.clone()),
+                                    Some(agent_accounts::display_name(
+                                        &agent.metadata.name,
+                                        account,
+                                    )),
                                 ),
                             );
                         }
@@ -435,7 +444,10 @@ impl AgentServerStore {
                                         as Box<dyn ExternalAgentServer>,
                                     ExternalAgentSource::Registry,
                                     agent.metadata.icon_path.clone(),
-                                    Some(agent.metadata.name.clone()),
+                                    Some(agent_accounts::display_name(
+                                        &agent.metadata.name,
+                                        account,
+                                    )),
                                 ),
                             );
                         }

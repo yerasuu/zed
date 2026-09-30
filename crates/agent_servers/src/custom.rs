@@ -227,7 +227,8 @@ impl AgentServer for CustomAgentServer {
             extra_env.insert("NO_BROWSER".to_owned(), "1".to_owned());
         }
         if is_registry_agent {
-            match agent_id.as_ref() {
+            // fleet: account entries (`<agent>@<account>`) get their base agent's env
+            match project::agent_server_store::agent_accounts::base_agent_id(agent_id.as_ref()) {
                 CLAUDE_AGENT_ID => {
                     extra_env.insert("ANTHROPIC_API_KEY".into(), "".into());
                 }
@@ -247,7 +248,10 @@ impl AgentServer for CustomAgentServer {
         }
         let store = delegate.store.downgrade();
         cx.spawn(async move |cx| {
-            if is_registry_agent && agent_id.as_ref() == GEMINI_ID {
+            if is_registry_agent
+                && project::agent_server_store::agent_accounts::base_agent_id(agent_id.as_ref())
+                    == GEMINI_ID
+            {
                 if let Some(api_key) = cx.update(api_key_for_gemini_cli).await.ok() {
                     extra_env.insert("GEMINI_API_KEY".into(), api_key);
                 }
