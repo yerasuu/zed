@@ -1,7 +1,7 @@
 # Fleet branch
 
-`fleet/main` is a long-lived branch that adds Orca-style multi-agent features on top of
-upstream Zed. It tracks `zed-industries/zed` `main` and must stay cheap to merge.
+The `main` branch of this fork adds Orca-style multi-agent features on top of upstream Zed.
+It tracks `zed-industries/zed` `main` and must stay cheap to merge.
 
 ## Syncing with upstream
 
@@ -9,13 +9,13 @@ upstream Zed. It tracks `zed-industries/zed` `main` and must stay cheap to merge
 git remote add upstream https://github.com/zed-industries/zed.git   # once
 git config rerere.enabled true                                     # once
 git fetch upstream
-git switch fleet/main
+git switch main
 git merge upstream/main
 ```
 
-Merge, never rebase: the branch is shared. Sync often; small merges conflict less.
-`.github/workflows/fleet_upstream_sync.yml` runs a daily trial merge. GitHub only runs
-scheduled workflows from the default branch, so that file must also exist there.
+GitHub's "Sync fork" button does the same merge. Merge, never rebase: the branch is shared.
+Sync often; small merges conflict less. `.github/workflows/fleet_upstream_sync.yml` runs a
+daily trial merge and reports conflicts or breakage without pushing anything.
 
 ## Building and running
 
@@ -71,6 +71,13 @@ agent-specific env (for example Claude's empty `ANTHROPIC_API_KEY`, which keeps 
 login in use). The same mechanism works for other registry agents by hand, e.g.
 `"codex-acp@work": { "type": "registry", "env": { "CODEX_HOME": "..." } }`.
 
+`agent: open accounts` opens the Agent Accounts page, which lists every Claude account with
+whether its agent is running, whether it is logged in, its email, organization, role and
+plan, and its 5-hour and 7-day usage with reset times. Usage comes from the cache Claude Code
+keeps in `.claude.json` (no extra API calls); the page rereads it every 30 seconds. Only
+non-secret fields of `.credentials.json` are parsed. The page also has buttons to add an
+account and to start a thread with a given account.
+
 Limitations: accounts only work in local projects, because remote projects run the stock
 `remote_server`. Code: `crates/project/src/agent_server_store/agent_accounts.rs` and
-`crates/agent_ui/src/fleet_accounts.rs`.
+`crates/agent_ui/src/fleet_accounts.rs` (with `fleet_accounts/accounts_page.rs`).
