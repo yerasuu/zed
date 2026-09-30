@@ -6043,6 +6043,8 @@ impl AgentPanel {
                                     }
                                 }),
                         )
+                        // fleet: agent accounts
+                        .item(crate::fleet_accounts::new_thread_menu_entry())
                 }))
             })
         };

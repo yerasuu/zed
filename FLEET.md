@@ -71,7 +71,8 @@ agent-specific env (for example Claude's empty `ANTHROPIC_API_KEY`, which keeps 
 login in use). The same mechanism works for other registry agents by hand, e.g.
 `"codex-acp@work": { "type": "registry", "env": { "CODEX_HOME": "..." } }`.
 
-`agent: open accounts` opens the Agent Accounts page, which lists every Claude account with
+`agent: open accounts` (or "Agent Accounts" at the bottom of the agent panel's `+` menu)
+opens the Agent Accounts page, which lists every Claude account with
 whether its agent is running, whether it is logged in, its email, organization, role and
 plan, and its 5-hour and 7-day usage with reset times. Usage comes from the cache Claude Code
 keeps in `.claude.json` (no extra API calls); the page rereads it every 30 seconds. Only

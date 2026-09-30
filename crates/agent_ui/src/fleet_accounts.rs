@@ -21,6 +21,7 @@ use project::{
     agent_server_store::{AgentServersUpdated, AllAgentServersSettings},
 };
 use settings::Settings as _;
+use ui::{Color, ContextMenuEntry, IconName};
 use util::ResultExt as _;
 use workspace::{Workspace, notifications::NotifyTaskExt as _};
 
@@ -72,6 +73,14 @@ pub(crate) fn init(fs: Arc<dyn Fs>, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Entry for the agent panel's new-thread menu, next to the agents the accounts belong to.
+pub(crate) fn new_thread_menu_entry() -> ContextMenuEntry {
+    ContextMenuEntry::new("Agent Accounts")
+        .icon(IconName::UserGroup)
+        .icon_color(Color::Muted)
+        .handler(|window, cx| window.dispatch_action(Box::new(OpenAgentAccounts), cx))
 }
 
 fn open_accounts_page(
