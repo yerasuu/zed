@@ -21,12 +21,18 @@ use workspace::{Workspace, notifications::NotifyTaskExt as _};
 
 use crate::NewExternalAgentThread;
 
+mod accounts_page;
+
+use accounts_page::AgentAccountsPage;
+
 actions!(
     agent,
     [
         /// Adds another Claude Agent account. It keeps its own login and shares settings and
         /// conversation history with the default account.
-        AddClaudeAccount
+        AddClaudeAccount,
+        /// Shows every Claude Agent account with its login, plan and usage.
+        OpenAgentAccounts
     ]
 );
 
@@ -50,11 +56,37 @@ const REGISTRATION_TIMEOUT: Duration = Duration::from_secs(60);
 pub(crate) fn init(fs: Arc<dyn Fs>, cx: &mut App) {
     cx.observe_new(move |workspace: &mut Workspace, _window, _cx| {
         let fs = fs.clone();
-        workspace.register_action(move |workspace, _: &AddClaudeAccount, window, cx| {
-            add_claude_account(workspace, fs.clone(), window, cx);
+        workspace.register_action({
+            let fs = fs.clone();
+            move |workspace, _: &AddClaudeAccount, window, cx| {
+                add_claude_account(workspace, fs.clone(), window, cx);
+            }
+        });
+        workspace.register_action(move |workspace, _: &OpenAgentAccounts, window, cx| {
+            open_accounts_page(workspace, fs.clone(), window, cx);
         });
     })
     .detach();
+}
+
+fn open_accounts_page(
+    workspace: &mut Workspace,
+    fs: Arc<dyn Fs>,
+    window: &mut Window,
+    cx: &mut Context<Workspace>,
+) {
+    let existing = workspace
+        .active_pane()
+        .read(cx)
+        .items()
+        .find_map(|item| item.downcast::<AgentAccountsPage>());
+    if let Some(existing) = existing {
+        existing.update(cx, |page, cx| page.refresh(cx));
+        workspace.activate_item(&existing, true, true, window, cx);
+    } else {
+        let page = AgentAccountsPage::new(workspace, fs, window, cx);
+        workspace.add_item_to_active_pane(Box::new(page), None, true, window, cx);
+    }
 }
 
 fn add_claude_account(
