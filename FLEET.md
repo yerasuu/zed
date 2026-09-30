@@ -42,37 +42,23 @@ never shares one with an installed stable Zed. `settings.json` is shared between
 
 ### Agent accounts
 
-Run the same registry agent under several accounts at once. An `agent_servers` entry keyed
-`<agent>@<account>` runs registry agent `<agent>` as its own external agent: its own
-process, its own entry in the new-thread menu (shown as "Claude Agent (work)") and its own
-threads. No settings schema change is involved, so stock Zed simply ignores these entries.
+Run Claude Agent under several accounts at once. Run `agent: add claude account` from the
+command palette: Zed creates `~/.claude-account-<n>`, saves a `claude-acp@account-<n>` entry
+in `settings.json` and opens a thread with it, where Claude's login prompt appears. After
+logging in once, the account stays in the new-thread menu as "Claude Agent (account-<n>)".
 
-```json
-"agent_servers": {
-  "claude-acp": { "type": "registry" },
-  "claude-acp@work": {
-    "type": "registry",
-    "env": { "CLAUDE_CONFIG_DIR": "/home/me/.claude-work" }
-  },
-  "claude-acp@personal": {
-    "type": "registry",
-    "env": { "CLAUDE_CONFIG_DIR": "/home/me/.claude-personal" }
-  }
-}
-```
+Each account directory links `settings.json`, `keybindings.json`, `CLAUDE.md`, `skills`,
+`commands`, `agents`, `projects` and `history.jsonl` from `~/.claude` (the approach
+`claude-swap` uses), so accounts share settings and conversation history and only the login
+differs. `.credentials.json` and `.claude.json` are never linked because they hold the login.
 
-Point each account at its own config dir via the agent's variable (`CLAUDE_CONFIG_DIR` for
-Claude Code, `CODEX_HOME` for Codex) so each keeps its own login; log in once per account.
-Account entries get the same agent-specific env as the base agent (for example Claude's
-empty `ANTHROPIC_API_KEY`, which keeps subscription login in use). Each account installs
-the agent into its own directory.
-
-`script/fleet-add-account <name>` creates a Claude account: it makes `~/.claude-<name>`,
-symlinks `settings.json`, `keybindings.json`, `CLAUDE.md`, `skills`, `commands`, `agents`,
-`projects` and `history.jsonl` from `~/.claude` (the approach `claude-swap` uses), and adds
-`claude-acp@<name>` to Zed's `settings.json`. Accounts therefore share settings and
-conversation history; only the login differs. `.credentials.json` and `.claude.json` are
-never linked because they hold the account's login.
+How it works: an `agent_servers` entry keyed `<agent>@<account>` runs registry agent
+`<agent>` as its own external agent, with its own process and threads. No settings schema
+change is involved, so stock Zed ignores these entries. Account entries get the base agent's
+agent-specific env (for example Claude's empty `ANTHROPIC_API_KEY`, which keeps subscription
+login in use). The same mechanism works for other registry agents by hand, e.g.
+`"codex-acp@work": { "type": "registry", "env": { "CODEX_HOME": "..." } }`.
 
 Limitations: accounts only work in local projects, because remote projects run the stock
-`remote_server`. The code lives in `crates/project/src/agent_server_store/agent_accounts.rs`.
+`remote_server`. Code: `crates/project/src/agent_server_store/agent_accounts.rs` and
+`crates/agent_ui/src/fleet_accounts.rs`.

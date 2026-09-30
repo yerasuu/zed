@@ -15,6 +15,8 @@ pub mod draft_prompt_store;
 mod entry_view_state;
 mod external_source_prompt;
 mod favorite_models;
+// fleet: agent accounts
+mod fleet_accounts;
 mod inline_assistant;
 mod inline_prompt_editor;
 mod language_model_selector;
@@ -616,6 +618,8 @@ pub fn init(
     context_server_configuration::init(language_registry, fs.clone(), cx);
     thread_metadata_store::init(cx);
     terminal_thread_metadata_store::init(cx);
+    // fleet: agent accounts
+    fleet_accounts::init(fs.clone(), cx);
 
     inline_assistant::init(fs.clone(), prompt_builder.clone(), cx);
     terminal_inline_assistant::init(fs.clone(), prompt_builder, cx);
