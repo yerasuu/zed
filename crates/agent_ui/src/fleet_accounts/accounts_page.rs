@@ -3,9 +3,10 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use agent_servers::CLAUDE_AGENT_ID;
 use chrono::{DateTime, Local, Utc};
 use fs::Fs;
+use futures::StreamExt as _;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, SharedString, Subscription, Task,
-    Window,
+    App, Context, Entity, EventEmitter, FocusHandle, Focusable, PromptLevel, SharedString,
+    Subscription, Task, WeakEntity, Window,
 };
 use project::{
     AgentId,
@@ -15,13 +16,14 @@ use project::{
 };
 use serde::Deserialize;
 use settings::{Settings as _, SettingsStore};
-use ui::{Chip, Indicator, ProgressBar, prelude::*};
+use ui::{Chip, Indicator, ProgressBar, Tooltip, prelude::*};
 use workspace::{
     Workspace,
     item::{Item, ItemEvent},
+    notifications::NotifyTaskExt as _,
 };
 
-use super::AddClaudeAccount;
+use super::{AddClaudeAccount, accounts_root, remove_account, remove_account_dir};
 use crate::{
     Agent, AgentPanel, NewExternalAgentThread,
     agent_connection_store::{AgentConnectionStatus, AgentConnectionStore},
@@ -33,8 +35,12 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
 pub struct AgentAccountsPage {
     fs: Arc<dyn Fs>,
+    workspace: WeakEntity<Workspace>,
     connection_store: Option<Entity<AgentConnectionStore>>,
     accounts: Vec<Account>,
+    /// Directories under `accounts_root()` with no settings entry, e.g. after an entry was
+    /// deleted from `settings.json` by hand.
+    orphaned_dirs: Vec<PathBuf>,
     focus_handle: FocusHandle,
     _refresh_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -141,8 +147,10 @@ impl AgentAccountsPage {
 
             let mut this = Self {
                 fs,
+                workspace: workspace.weak_handle(),
                 connection_store,
                 accounts: Vec::new(),
+                orphaned_dirs: Vec::new(),
                 focus_handle: cx.focus_handle(),
                 _refresh_task: Task::ready(()),
                 _subscriptions: subscriptions,
@@ -165,8 +173,10 @@ impl AgentAccountsPage {
                         source: source.clone(),
                     });
                 }
+                let orphaned_dirs = orphaned_dirs(fs.as_ref(), &sources).await;
                 let updated = this.update(cx, |this, cx| {
                     this.accounts = accounts;
+                    this.orphaned_dirs = orphaned_dirs;
                     cx.notify();
                 });
                 if updated.is_err() {
@@ -188,6 +198,80 @@ impl AgentAccountsPage {
                     cx,
                 )
             })
+    }
+
+    fn remove_account(
+        &mut self,
+        source: AccountSource,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let name = source.name.clone().unwrap_or_default();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Remove Claude account {name}?"),
+            Some(&format!(
+                "This logs it out and deletes {}. Settings and history shared from ~/.claude are kept.",
+                source.config_dir.display()
+            )),
+            &["Remove", "Cancel"],
+            cx,
+        );
+        let fs = self.fs.clone();
+        let task = cx.spawn(async move |_, cx| {
+            if answer.await? != 0 {
+                return anyhow::Ok(());
+            }
+            remove_account(fs, source.agent_id, source.config_dir, cx).await
+        });
+        task.detach_and_notify_err(self.workspace.clone(), window, cx);
+    }
+
+    fn delete_orphaned_dir(&mut self, dir: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &format!("Delete {}?", dir.display()),
+            Some("No account uses these files anymore."),
+            &["Delete", "Cancel"],
+            cx,
+        );
+        let fs = self.fs.clone();
+        let task = cx.spawn(async move |this, cx| {
+            if answer.await? != 0 {
+                return anyhow::Ok(());
+            }
+            remove_account_dir(fs.as_ref(), &dir).await?;
+            this.update(cx, |this, cx| this.refresh(cx))
+        });
+        task.detach_and_notify_err(self.workspace.clone(), window, cx);
+    }
+
+    fn render_orphaned_dirs(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .p_3()
+            .gap_2()
+            .border_1()
+            .border_color(cx.theme().colors().border_variant)
+            .rounded_md()
+            .child(Label::new("Files without an account").color(Color::Warning))
+            .children(self.orphaned_dirs.iter().enumerate().map(|(index, dir)| {
+                let dir_to_delete = dir.clone();
+                h_flex()
+                    .justify_between()
+                    .gap_2()
+                    .child(
+                        Label::new(dir.display().to_string())
+                            .size(LabelSize::Small)
+                            .color(Color::Muted),
+                    )
+                    .child(
+                        Button::new(("orphan-delete", index), "Delete")
+                            .style(ButtonStyle::Outlined)
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.delete_orphaned_dir(dir_to_delete.clone(), window, cx);
+                            })),
+                    )
+            }))
     }
 
     fn render_account(
@@ -256,7 +340,20 @@ impl AgentAccountsPage {
                                 this.child(Chip::new(subscription))
                             }),
                     )
-                    .child(new_thread_button),
+                    .child(h_flex().gap_1().child(new_thread_button).when(
+                        account.source.name.is_some(),
+                        |this| {
+                            let source = account.source.clone();
+                            this.child(
+                                IconButton::new(("account-remove", index), IconName::Trash)
+                                    .icon_size(IconSize::Small)
+                                    .tooltip(Tooltip::text("Remove account"))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.remove_account(source.clone(), window, cx);
+                                    })),
+                            )
+                        },
+                    )),
             )
             .child(if details.logged_in {
                 Label::new(if identity.is_empty() {
@@ -386,6 +483,22 @@ fn configured_accounts(cx: &App) -> Vec<AccountSource> {
     accounts
 }
 
+async fn orphaned_dirs(fs: &dyn Fs, sources: &[AccountSource]) -> Vec<PathBuf> {
+    let Ok(mut entries) = fs.read_dir(&accounts_root()).await else {
+        return Vec::new();
+    };
+    let mut orphaned = Vec::new();
+    while let Some(entry) = entries.next().await {
+        let Ok(path) = entry else { continue };
+        let in_use = sources.iter().any(|source| source.config_dir == path);
+        if !in_use && fs.is_dir(&path).await {
+            orphaned.push(path);
+        }
+    }
+    orphaned.sort();
+    orphaned
+}
+
 async fn load_details(fs: &dyn Fs, source: &AccountSource) -> AccountDetails {
     let credentials =
         read_json::<CredentialsFile>(fs, &source.config_dir.join(".credentials.json")).await;
@@ -478,7 +591,10 @@ impl Render for AgentAccountsPage {
                     .gap_3()
                     .size_full()
                     .overflow_y_scroll()
-                    .children(accounts),
+                    .children(accounts)
+                    .when(!self.orphaned_dirs.is_empty(), |this| {
+                        this.child(self.render_orphaned_dirs(cx))
+                    }),
             )
     }
 }

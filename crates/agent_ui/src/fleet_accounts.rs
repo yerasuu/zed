@@ -4,19 +4,24 @@
 //! and conversation history with `~/.claude`. Kept in its own file so upstream merges don't
 //! touch it; see `FLEET.md`.
 
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use agent_servers::CLAUDE_AGENT_ID;
 use anyhow::{Context as _, anyhow};
 use collections::HashMap;
-use fs::Fs;
+use fs::{Fs, RemoveOptions};
 use futures::{FutureExt as _, channel::oneshot};
-use gpui::{App, Context, Window, actions};
+use gpui::{App, AsyncApp, AsyncWindowContext, Context, Window, actions};
 use project::{
     AgentId,
     agent_server_store::{AgentServersUpdated, AllAgentServersSettings},
 };
 use settings::Settings as _;
+use util::ResultExt as _;
 use workspace::{Workspace, notifications::NotifyTaskExt as _};
 
 use crate::NewExternalAgentThread;
@@ -99,25 +104,9 @@ fn add_claude_account(
     let configured_agents = AllAgentServersSettings::get_global(cx).clone();
 
     let task = cx.spawn_in(window, async move |workspace, cx| {
-        let shared_dir = util::paths::home_dir().join(".claude");
-        let accounts_dir = paths::config_dir()
-            .join("agent_accounts")
-            .join(CLAUDE_AGENT_ID);
         let (name, account_dir) =
-            next_free_account(&configured_agents, &accounts_dir, fs.as_ref()).await;
+            next_free_account(&configured_agents, &accounts_root(), fs.as_ref()).await;
         let agent_id = AgentId::new(format!("{CLAUDE_AGENT_ID}@{name}"));
-
-        fs.create_dir(&account_dir)
-            .await
-            .with_context(|| format!("creating {}", account_dir.display()))?;
-        for item in SHARED_ITEMS {
-            let source = shared_dir.join(item);
-            if fs.metadata(&source).await?.is_some() {
-                fs.create_symlink(&account_dir.join(item), source)
-                    .await
-                    .with_context(|| format!("linking {item} into {}", account_dir.display()))?;
-            }
-        }
 
         // Subscribe before saving so the registration can't happen unobserved.
         let (registered_tx, registered_rx) = oneshot::channel();
@@ -136,25 +125,15 @@ fn add_claude_account(
             )
         })?;
 
-        let account_dir_value = account_dir.to_string_lossy().into_owned();
-        let saved = cx.update(|_, cx| {
-            let agent_id = agent_id.to_string();
-            settings::update_settings_file_with_completion(fs.clone(), cx, move |settings, _| {
-                settings.agent_servers.get_or_insert_default().0.insert(
-                    agent_id,
-                    settings::CustomAgentServerSettings::Registry {
-                        env: HashMap::from_iter([(
-                            "CLAUDE_CONFIG_DIR".to_string(),
-                            account_dir_value,
-                        )]),
-                        default_mode: None,
-                        default_config_options: HashMap::default(),
-                        favorite_config_option_values: HashMap::default(),
-                    },
-                );
-            })
-        })?;
-        saved.await.context("saving the account to settings")??;
+        let created = create_account(fs.clone(), &agent_id, &account_dir, cx).await;
+        if let Err(error) = created {
+            // An account exists only as a settings entry plus its directory, so a half-created
+            // one must not leave files behind.
+            remove_account_dir(fs.as_ref(), &account_dir)
+                .await
+                .log_err();
+            return Err(error);
+        }
 
         let timeout = cx.background_executor().timer(REGISTRATION_TIMEOUT);
         futures::select_biased! {
@@ -175,10 +154,97 @@ fn add_claude_account(
     task.detach_and_notify_err(cx.weak_entity(), window, cx);
 }
 
+async fn create_account(
+    fs: Arc<dyn Fs>,
+    agent_id: &AgentId,
+    account_dir: &Path,
+    cx: &mut AsyncWindowContext,
+) -> anyhow::Result<()> {
+    let shared_dir = util::paths::home_dir().join(".claude");
+    fs.create_dir(account_dir)
+        .await
+        .with_context(|| format!("creating {}", account_dir.display()))?;
+    for item in SHARED_ITEMS {
+        let source = shared_dir.join(item);
+        if fs.metadata(&source).await?.is_some() {
+            fs.create_symlink(&account_dir.join(item), source)
+                .await
+                .with_context(|| format!("linking {item} into {}", account_dir.display()))?;
+        }
+    }
+
+    let agent_id = agent_id.to_string();
+    let account_dir_value = account_dir.to_string_lossy().into_owned();
+    let saved = cx.update(|_, cx| {
+        settings::update_settings_file_with_completion(fs.clone(), cx, move |settings, _| {
+            settings.agent_servers.get_or_insert_default().0.insert(
+                agent_id,
+                settings::CustomAgentServerSettings::Registry {
+                    env: HashMap::from_iter([("CLAUDE_CONFIG_DIR".to_string(), account_dir_value)]),
+                    default_mode: None,
+                    default_config_options: HashMap::default(),
+                    favorite_config_option_values: HashMap::default(),
+                },
+            );
+        })
+    })?;
+    saved.await.context("saving the account to settings")?
+}
+
+/// Where account directories live. Only direct children of it are ever deleted.
+fn accounts_root() -> PathBuf {
+    paths::config_dir()
+        .join("agent_accounts")
+        .join(CLAUDE_AGENT_ID)
+}
+
+/// Removes the account's settings entry first and its directory second, so a failed save never
+/// leaves an entry pointing at deleted files.
+async fn remove_account(
+    fs: Arc<dyn Fs>,
+    agent_id: AgentId,
+    account_dir: PathBuf,
+    cx: &mut AsyncApp,
+) -> anyhow::Result<()> {
+    let saved = cx.update(|cx| {
+        settings::update_settings_file_with_completion(fs.clone(), cx, move |settings, _| {
+            if let Some(agent_servers) = settings.agent_servers.as_mut() {
+                agent_servers.0.remove(agent_id.as_ref());
+            }
+        })
+    });
+    saved
+        .await
+        .context("removing the account from settings")??;
+    remove_account_dir(fs.as_ref(), &account_dir).await
+}
+
+async fn remove_account_dir(fs: &dyn Fs, account_dir: &Path) -> anyhow::Result<()> {
+    // An entry edited by hand may point anywhere (even `~/.claude`), and those files aren't ours.
+    if account_dir.parent() != Some(accounts_root().as_path()) {
+        log::info!(
+            "not deleting {}: it is outside {}",
+            account_dir.display(),
+            accounts_root().display()
+        );
+        return Ok(());
+    }
+    // `remove_dir_all` deletes the shared-item symlinks themselves, never what they point at.
+    fs.remove_dir(
+        account_dir,
+        RemoveOptions {
+            recursive: true,
+            ignore_if_not_exists: true,
+        },
+    )
+    .await
+    .with_context(|| format!("deleting {}", account_dir.display()))
+}
+
 /// Accounts are numbered from 2, since the default `claude-acp` entry is the first account.
 async fn next_free_account(
     configured_agents: &AllAgentServersSettings,
-    accounts_dir: &std::path::Path,
+    accounts_dir: &Path,
     fs: &dyn Fs,
 ) -> (String, PathBuf) {
     let mut number = 2;

@@ -78,6 +78,15 @@ keeps in `.claude.json` (no extra API calls); the page rereads it every 30 secon
 non-secret fields of `.credentials.json` are parsed. The page also has buttons to add an
 account and to start a thread with a given account.
 
+An account's files exist only while the account does. Removing an account from the page
+(trash button, confirmed) deletes its settings entry first and its directory second; the
+shared items are symlinks, so only the links go and `~/.claude` is untouched. A failed add
+deletes the directory it created. Directories under `agent_accounts/claude-acp/` with no
+settings entry (for example after deleting an entry from `settings.json` by hand) are listed
+as "Files without an account" with a Delete button. They are not deleted automatically,
+because a momentarily invalid `settings.json` would otherwise wipe every account's login.
+Only direct children of `agent_accounts/claude-acp/` are ever deleted.
+
 Limitations: accounts only work in local projects, because remote projects run the stock
 `remote_server`. Code: `crates/project/src/agent_server_store/agent_accounts.rs` and
 `crates/agent_ui/src/fleet_accounts.rs` (with `fleet_accounts/accounts_page.rs`).
