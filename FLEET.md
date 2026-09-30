@@ -17,6 +17,16 @@ Merge, never rebase: the branch is shared. Sync often; small merges conflict les
 `.github/workflows/fleet_upstream_sync.yml` runs a daily trial merge. GitHub only runs
 scheduled workflows from the default branch, so that file must also exist there.
 
+## Building and running
+
+```sh
+nix --extra-experimental-features 'nix-command flakes' develop -c cargo build --release -p zed
+./target/release/zed
+```
+
+Source builds use the `dev` release channel, so the fleet build keeps its own database and
+never shares one with an installed stable Zed. `settings.json` is shared between channels.
+
 ## Rules for fleet changes
 
 - Put logic in new files or new crates. New files never conflict.
@@ -57,17 +67,12 @@ Account entries get the same agent-specific env as the base agent (for example C
 empty `ANTHROPIC_API_KEY`, which keeps subscription login in use). Each account installs
 the agent into its own directory.
 
-To share settings between accounts, symlink the account-independent files from
-`~/.claude` into each account dir (the approach `claude-swap` uses):
-
-```sh
-for item in settings.json keybindings.json CLAUDE.md skills commands agents; do
-  ln -s ~/.claude/$item ~/.claude-work/$item
-done
-```
-
-Never share `.credentials.json` or `.claude.json`: they hold the account's login. Sharing
-`projects/` and `history.jsonl` gives all accounts one conversation history.
+`script/fleet-add-account <name>` creates a Claude account: it makes `~/.claude-<name>`,
+symlinks `settings.json`, `keybindings.json`, `CLAUDE.md`, `skills`, `commands`, `agents`,
+`projects` and `history.jsonl` from `~/.claude` (the approach `claude-swap` uses), and adds
+`claude-acp@<name>` to Zed's `settings.json`. Accounts therefore share settings and
+conversation history; only the login differs. `.credentials.json` and `.claude.json` are
+never linked because they hold the account's login.
 
 Limitations: accounts only work in local projects, because remote projects run the stock
 `remote_server`. The code lives in `crates/project/src/agent_server_store/agent_accounts.rs`.
