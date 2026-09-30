@@ -24,6 +24,17 @@ nix --extra-experimental-features 'nix-command flakes' develop -c cargo build --
 ./target/release/zed
 ```
 
+Outside NixOS the Nix-built binary can't use the system GPU driver (its Vulkan loader fails
+with `libdrm_amdgpu.so.1: cannot open shared object file`, and Zed reports "Failed to create
+surface"). Run it through nixGL, which supplies Nix's Mesa drivers:
+
+```sh
+nix --extra-experimental-features 'nix-command flakes' run --impure \
+  github:nix-community/nixGL#nixVulkanIntel -- ./target/release/zed <folder>
+```
+
+`nixVulkanIntel` ships all of Mesa's Vulkan drivers, AMD's included.
+
 Source builds use the `dev` release channel, so the fleet build keeps its own database and
 never shares one with an installed stable Zed. `settings.json` is shared between channels.
 
