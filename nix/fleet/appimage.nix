@@ -12,6 +12,9 @@ pkgs.writeShellApplication {
     VK_DRIVER_FILES="$(IFS=:; echo "''${driver_files[*]}")"
     # Loaders older than 1.3.234 only read the deprecated name.
     export VK_DRIVER_FILES VK_ICD_FILENAMES="$VK_DRIVER_FILES"
+    # Host implicit layers (Mesa device select, overlays) fail to load for the same reason
+    # as host drivers, so skip them instead of logging an error on every start.
+    export VK_LOADER_LAYERS_DISABLE='~implicit~'
     exec ${zed-editor}/bin/zed "$@"
   '';
 }
