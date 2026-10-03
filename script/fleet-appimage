@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# fleet: builds target/Zed-fleet-x86_64.AppImage from this checkout (see FLEET.md, "AppImage").
+# Zed is built by the repo's flake, so only committed changes are included.
+
+set -euo pipefail
+
+repo="$(git rev-parse --show-toplevel)"
+output="$repo/target/Zed-fleet-x86_64.AppImage"
+mkdir -p "$repo/target"
+
+nix --extra-experimental-features 'nix-command flakes' bundle \
+    --bundler github:ralismark/nix-appimage \
+    --out-link "$repo/target/fleet-appimage" \
+    --impure --expr "
+        let
+          flake = builtins.getFlake \"git+file://$repo\";
+          pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
+        in
+        import $repo/nix/fleet/appimage.nix {
+          inherit pkgs;
+          zed-editor = flake.packages.x86_64-linux.default;
+        }"
+
+# The bundle is a read-only store path; copy it so the image can be moved and run anywhere.
+install -m 755 "$(readlink -f "$repo/target/fleet-appimage")" "$output"
+echo "$output"
