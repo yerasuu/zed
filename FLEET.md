@@ -49,7 +49,14 @@ The script builds Zed with the repo's flake (`nix/build.nix`) and bundles it wit
 with Mesa's Vulkan drivers from the same closure, so the image doesn't need nixGL or the
 host's GPU drivers (tested on SteamOS with an AMD GPU). Only committed changes are included, and every
 commit rebuilds Zed from scratch (about 15-20 minutes) because the commit SHA is part of the
-package. The image is about 850 MB, mostly Mesa and LLVM. The flake builds the `nightly`
+package. The image is about 850 MB, mostly Mesa and LLVM.
+
+The image meets what AppImage managers such as
+[AppManager](https://github.com/kem-a/AppManager) need to add it to the app menu: a SquashFS
+payload with `AppRun`, `zed-fleet.desktop` ("Zed Fleet", with `X-AppImage-Version` and
+`StartupWMClass=dev.zed.Zed-Nightly`) and a 256x256 PNG `.DirIcon` at its root. Open the
+image with AppManager to install it. It has no update information, so AppManager won't
+update it; install a newly built image over it instead. The flake builds the `nightly`
 channel, so the AppImage has its own database, separate from the `dev` source build.
 
 ## Rules for fleet changes
