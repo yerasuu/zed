@@ -54,22 +54,32 @@ image="$(readlink -f "$image_link")"
 install -m 755 "$image" "$output"
 rm "$image_link"
 
-# Every per-build path depends on a snapshot of the repo (the flake's copy, and the filtered
-# `src` of nix/build.nix), so the paths referring to those, directly or not, are exactly the
-# ones that change with every commit: the snapshots, their referrers, and the referrers' outputs.
+# Per-build paths change with every commit. Most depend on a snapshot of the repo (the flake's
+# copy, and the filtered `src` of nix/build.nix): the snapshots, their referrers and the
+# referrers' outputs. Crane's deps build only sees a dummy source, but its name carries the
+# package version, which includes the commit SHA, so it is never reused either.
 sources=(
     "$(nix eval --impure --raw --expr "$flake.outPath")"
-    "$(nix eval --impure --raw --expr "$flake.packages.x86_64-linux.default.src.outPath")"
+    "$(nix eval --impure --raw --expr "toString $flake.packages.x86_64-linux.default.src")"
 )
-nix-store --query --referrers-closure "${sources[@]}" >"$scratch/referrers"
+version="$(nix eval --impure --raw --expr "$flake.packages.x86_64-linux.default.version")"
+image_drv="$(nix-store --query --deriver "$image")"
+nix-store --query --requisites --include-outputs "$image_drv" |
+    grep -v '\.drv$' | sort -u >"$scratch/closure"
+# Derivations count too: a `.drv` refers to its inputs, and Nix won't delete a path that is
+# still referred to.
 {
-    grep -v '\.drv$' "$scratch/referrers" || true
-    grep '\.drv$' "$scratch/referrers" | xargs -r nix-store --query --outputs
+    nix-store --query --referrers-closure "${sources[@]}"
+    nix-store --query --requisites "$image_drv" | grep -F -- "-$version"
+} | sort -u >"$scratch/per-build-drvs"
+{
+    cat "$scratch/per-build-drvs"
+    grep '\.drv$' "$scratch/per-build-drvs" | xargs -r nix-store --query --outputs
+    grep -F -- "-$version" "$scratch/closure" || true
 } | sort -u >"$scratch/per-build"
 
 # Everything else the build used is reusable by the next one, so root it from target/.
-nix-store --query --requisites --include-outputs "$(nix-store --query --deriver "$image")" |
-    grep -v '\.drv$' | sort -u | comm -23 - "$scratch/per-build" >"$scratch/cache"
+comm -23 "$scratch/closure" "$scratch/per-build" >"$scratch/cache"
 python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))' \
     <"$scratch/cache" >"$scratch/cache.json"
 previous_cache="$(readlink -e "$cache_link" || true)"
@@ -84,6 +94,7 @@ delete_paths <"$scratch/per-build"
 if [[ -e "$previous_cache" && "$previous_cache" != "$(readlink -f "$cache_link")" ]]; then
     {
         echo "$previous_cache"
+        nix-store --query --deriver "$previous_cache"
         sort -u "$previous_cache" | comm -23 - "$scratch/cache"
     } | delete_paths
 fi
