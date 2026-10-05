@@ -56,7 +56,11 @@ The image meets what AppImage managers such as
 payload with `AppRun`, `zed-fleet.desktop` ("Zed Fleet", with `X-AppImage-Version` and
 `StartupWMClass=dev.zed.Zed-Nightly`) and a 256x256 PNG `.DirIcon` at its root. Open the
 image with AppManager to install it. It has no update information, so AppManager won't
-update it; install a newly built image over it instead. The flake builds the `nightly`
+update it; install a newly built image over it instead. The script cleans up after itself: once the image is copied to `target/`, it removes the out-link
+and deletes the store paths unique to that build (Zed's build and crane deps build, the wrapper
+and the image, about 2 GB), so builds don't pile up in `/nix/store`. Shared inputs (nixpkgs,
+Mesa, the Rust toolchain, vendored crates) stay cached; `nix store gc` removes those too.
+The flake builds the `nightly`
 channel, so the AppImage has its own database, separate from the `dev` source build.
 
 ## Rules for fleet changes

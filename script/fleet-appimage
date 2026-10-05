@@ -1,16 +1,21 @@
 #!/usr/bin/env bash
 # fleet: builds target/Zed-fleet-x86_64.AppImage from this checkout (see FLEET.md, "AppImage").
-# Zed is built by the repo's flake, so only committed changes are included.
+# Zed is built by the repo's flake, so only files tracked by git are included.
 
 set -euo pipefail
 
+nix() {
+    command nix --extra-experimental-features 'nix-command flakes' "$@"
+}
+
 repo="$(git rev-parse --show-toplevel)"
 output="$repo/target/Zed-fleet-x86_64.AppImage"
+link="$repo/target/fleet-appimage"
 mkdir -p "$repo/target"
 
-nix --extra-experimental-features 'nix-command flakes' bundle \
+nix bundle \
     --bundler github:ralismark/nix-appimage \
-    --out-link "$repo/target/fleet-appimage" \
+    --out-link "$link" \
     --impure --expr "
         let
           flake = builtins.getFlake \"git+file://$repo\";
@@ -21,6 +26,23 @@ nix --extra-experimental-features 'nix-command flakes' bundle \
           zed-editor = flake.packages.x86_64-linux.default;
         }"
 
+image="$(readlink -f "$link")"
 # The bundle is a read-only store path; copy it so the image can be moved and run anywhere.
-install -m 755 "$(readlink -f "$repo/target/fleet-appimage")" "$output"
+install -m 755 "$image" "$output"
+
+# Zed's build, its crane deps build, the wrapper and the image are new store paths on every
+# commit (the commit SHA is part of the package), so once the image is copied out they are
+# garbage. Delete exactly those instead of leaving ~2 GB per build for a store-wide GC; shared
+# inputs (nixpkgs, Mesa, the toolchain, vendored crates) stay cached for the next build.
+rm "$link"
+nix-store --query --requisites "$(nix-store --query --deriver "$image")" |
+    grep -E -- '-(zed-editor-(deps-)?[0-9][^/]*|zed-fleet-[^/]*|zed|zed\.AppImage|runtime-deps)\.drv$' |
+    xargs -r nix-store --query --outputs |
+    # Requisites list dependencies first; delete referrers first so each path is free to go.
+    tac |
+    while read -r path; do
+        # Paths still in use elsewhere (e.g. installed in a profile) are refused by Nix and kept.
+        [[ -e "$path" ]] && nix store delete "$path" 2>/dev/null || true
+    done
+
 echo "$output"
