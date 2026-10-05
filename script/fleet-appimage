@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # fleet: builds target/Zed-fleet-x86_64.AppImage from this checkout (see FLEET.md, "AppImage").
 # Zed is built by the repo's flake, so only files tracked by git are included.
+#
+# Everything the build leaves in /nix/store is either deleted or owned by target/: per-build
+# paths are deleted once the image is copied out, and the reusable build inputs are kept alive
+# by the GC root target/fleet-build-cache, so deleting target/ and running `nix store gc` frees
+# all of it.
 
 set -euo pipefail
 
@@ -8,41 +13,79 @@ nix() {
     command nix --extra-experimental-features 'nix-command flakes' "$@"
 }
 
+# Deletes the store paths read from stdin. Paths still in use elsewhere (e.g. installed in a
+# profile) are refused by Nix and kept. A path can't go while another refers to it, so this
+# repeats until a pass deletes nothing.
+delete_paths() {
+    local paths remaining path
+    mapfile -t paths
+    while ((${#paths[@]})); do
+        remaining=()
+        for path in "${paths[@]}"; do
+            [[ -e "$path" ]] || continue
+            nix store delete "$path" &>/dev/null || remaining+=("$path")
+        done
+        ((${#remaining[@]} < ${#paths[@]})) || break
+        paths=("${remaining[@]}")
+    done
+}
+
 repo="$(git rev-parse --show-toplevel)"
 output="$repo/target/Zed-fleet-x86_64.AppImage"
-link="$repo/target/fleet-appimage"
+image_link="$repo/target/fleet-appimage"
+cache_link="$repo/target/fleet-build-cache"
 mkdir -p "$repo/target"
+scratch="$(mktemp -d "$repo/target/fleet-appimage.XXXXXX")"
+trap 'rm -rf "$scratch"' EXIT
+flake="(builtins.getFlake \"git+file://$repo\")"
+pkgs="$flake.inputs.nixpkgs.legacyPackages.x86_64-linux"
 
 nix bundle \
     --bundler github:ralismark/nix-appimage \
-    --out-link "$link" \
+    --out-link "$image_link" \
     --impure --expr "
-        let
-          flake = builtins.getFlake \"git+file://$repo\";
-          pkgs = flake.inputs.nixpkgs.legacyPackages.x86_64-linux;
-        in
         import $repo/nix/fleet/appimage.nix {
-          inherit pkgs;
-          zed-editor = flake.packages.x86_64-linux.default;
+          pkgs = $pkgs;
+          zed-editor = $flake.packages.x86_64-linux.default;
         }"
 
-image="$(readlink -f "$link")"
+image="$(readlink -f "$image_link")"
 # The bundle is a read-only store path; copy it so the image can be moved and run anywhere.
 install -m 755 "$image" "$output"
+rm "$image_link"
 
-# Zed's build, its crane deps build, the wrapper and the image are new store paths on every
-# commit (the commit SHA is part of the package), so once the image is copied out they are
-# garbage. Delete exactly those instead of leaving ~2 GB per build for a store-wide GC; shared
-# inputs (nixpkgs, Mesa, the toolchain, vendored crates) stay cached for the next build.
-rm "$link"
-nix-store --query --requisites "$(nix-store --query --deriver "$image")" |
-    grep -E -- '-(zed-editor-(deps-)?[0-9][^/]*|zed-fleet-[^/]*|zed|zed\.AppImage|runtime-deps)\.drv$' |
-    xargs -r nix-store --query --outputs |
-    # Requisites list dependencies first; delete referrers first so each path is free to go.
-    tac |
-    while read -r path; do
-        # Paths still in use elsewhere (e.g. installed in a profile) are refused by Nix and kept.
-        [[ -e "$path" ]] && nix store delete "$path" 2>/dev/null || true
-    done
+# Every per-build path depends on a snapshot of the repo (the flake's copy, and the filtered
+# `src` of nix/build.nix), so the paths referring to those, directly or not, are exactly the
+# ones that change with every commit: the snapshots, their referrers, and the referrers' outputs.
+sources=(
+    "$(nix eval --impure --raw --expr "$flake.outPath")"
+    "$(nix eval --impure --raw --expr "$flake.packages.x86_64-linux.default.src.outPath")"
+)
+nix-store --query --referrers-closure "${sources[@]}" >"$scratch/referrers"
+{
+    grep -v '\.drv$' "$scratch/referrers" || true
+    grep '\.drv$' "$scratch/referrers" | xargs -r nix-store --query --outputs
+} | sort -u >"$scratch/per-build"
+
+# Everything else the build used is reusable by the next one, so root it from target/.
+nix-store --query --requisites --include-outputs "$(nix-store --query --deriver "$image")" |
+    grep -v '\.drv$' | sort -u | comm -23 - "$scratch/per-build" >"$scratch/cache"
+python3 -c 'import json, sys; print(json.dumps(sys.stdin.read().split()))' \
+    <"$scratch/cache" >"$scratch/cache.json"
+previous_cache="$(readlink -e "$cache_link" || true)"
+nix build --out-link "$cache_link" --impure --expr "
+    $pkgs.writeText \"fleet-build-cache\" (builtins.concatStringsSep \"\n\"
+      (map builtins.storePath (builtins.fromJSON (builtins.readFile $scratch/cache.json))))"
+
+delete_paths <"$scratch/per-build"
+
+# Inputs only the previous build needed (e.g. crates dropped from Cargo.lock) just lost their
+# root; delete them now rather than leaving them for a store-wide GC.
+if [[ -e "$previous_cache" && "$previous_cache" != "$(readlink -f "$cache_link")" ]]; then
+    {
+        echo "$previous_cache"
+        sort -u "$previous_cache" | comm -23 - "$scratch/cache"
+    } | delete_paths
+fi
 
 echo "$output"
