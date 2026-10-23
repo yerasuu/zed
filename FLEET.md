@@ -51,6 +51,14 @@ host's GPU drivers (tested on SteamOS with an AMD GPU). Only committed changes a
 commit rebuilds Zed from scratch (about 15-20 minutes) because the commit SHA is part of the
 package. The image is about 850 MB, mostly Mesa and LLVM.
 
+Inside the image `/` is the host's (home, `/usr`, `/run`, `/tmp`...), so Zed's terminal, git, language
+servers and agents use the host's tools and config. If the host has `/nix`, it stays visible
+too, with the bundled store layered over `/nix/store` through overlayfs, so tools from the
+host's Nix profiles and `nix` itself work (without a host `/nix`, only the bundled store
+exists). This comes from `nix/fleet/apprun.c`, a copy of nix-appimage's AppRun changed for it.
+Limits that remain: the image runs in a user namespace, so setuid programs such as `sudo` fail
+and the user's extra groups show as `nobody`.
+
 The image meets what AppImage managers such as
 [AppManager](https://github.com/kem-a/AppManager) need to add it to the app menu: a SquashFS
 payload with `AppRun`, `zed-fleet.desktop` ("Zed Fleet", with `X-AppImage-Version` and

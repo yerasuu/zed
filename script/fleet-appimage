@@ -40,14 +40,24 @@ trap 'rm -rf "$scratch"' EXIT
 flake="(builtins.getFlake \"git+file://$repo\")"
 pkgs="$flake.inputs.nixpkgs.legacyPackages.x86_64-linux"
 
-nix bundle \
-    --bundler github:ralismark/nix-appimage \
+# Same as `nix bundle --bundler github:ralismark/nix-appimage`, with nix/fleet/apprun.nix as
+# the AppRun so the host's /nix stays visible inside the image.
+nix build \
     --out-link "$image_link" \
     --impure --expr "
-        import $repo/nix/fleet/appimage.nix {
+        let
+          nix-appimage = builtins.getFlake \"github:ralismark/nix-appimage\";
           pkgs = $pkgs;
-          zed-editor = $flake.packages.x86_64-linux.default;
-        }"
+          mkAppImage = pkgs.callPackage \"\${nix-appimage}/mkAppImage.nix\" {
+            mkappimage-runtime = nix-appimage.packages.x86_64-linux.appimage-runtimes.appimage-type2-runtime;
+            mkappimage-apprun = pkgs.pkgsStatic.callPackage $repo/nix/fleet/apprun.nix { };
+          };
+          zed-fleet = import $repo/nix/fleet/appimage.nix {
+            inherit pkgs;
+            zed-editor = $flake.packages.x86_64-linux.default;
+          };
+        in
+        mkAppImage { program = pkgs.lib.getExe zed-fleet; }"
 
 image="$(readlink -f "$image_link")"
 # The bundle is a read-only store path; copy it so the image can be moved and run anywhere.
